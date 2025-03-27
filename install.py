@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Complete Installation Script for BlizzardSoundRipper Dependencies
 
