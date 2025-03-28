@@ -87,36 +87,40 @@ goto EOF
 savepos FILE_SIZE
 goto CURRENT_POS
 
-set TOTAL_FOUND 0
-for POS = 0 < FILE_SIZE step 256
-    goto POS
-    getdstring CHECK_SIG 4
-    
-    # Check for RIFF, RIFX, OggS
-    if CHECK_SIG == "RIFF" || CHECK_SIG == "RIFX" || CHECK_SIG == "OggS"
-        # Extract this block
-        goto POS
-        
-        # Allocate a reasonable chunk size
-        math CHUNK_SIZE = 2000000  # 2MB
-        if POS + CHUNK_SIZE > FILE_SIZE
-            math CHUNK_SIZE = FILE_SIZE - POS
-        endif
-        
-        # Extract the data
-        log MEMORY_FILE POS CHUNK_SIZE
-        string FILENAME p= "scan_%s_%08d.wem" CHECK_SIG TOTAL_FOUND
-        get MEMORY_SIZE asize MEMORY_FILE
-        log FILENAME 0 MEMORY_SIZE MEMORY_FILE
-        math TOTAL_FOUND + 1
-        
-        # Skip ahead to avoid duplicates
-        math POS + 1000000
-    endif
-next POS
+# Look for major audio signatures
+findloc RIFF_OFFSET string "RIFF" 0 ""
+findloc RIFX_OFFSET string "RIFX" 0 ""
+findloc OGGS_OFFSET string "OggS" 0 ""
 
-if TOTAL_FOUND > 0
-    print "Found %TOTAL_FOUND% potential audio files"
+# If we found signatures, extract them one by one
+if RIFF_OFFSET != ""
+    goto RIFF_OFFSET
+    log MEMORY_FILE RIFF_OFFSET 0x1000000 # 16MB max size
+    string FILENAME p= "riff_%08d.wem" 0
+    get MEMORY_SIZE asize MEMORY_FILE
+    if MEMORY_SIZE > 100
+        log FILENAME 0 MEMORY_SIZE MEMORY_FILE
+    endif
+endif
+
+if RIFX_OFFSET != ""
+    goto RIFX_OFFSET
+    log MEMORY_FILE RIFX_OFFSET 0x1000000 # 16MB max size
+    string FILENAME p= "rifx_%08d.wem" 0
+    get MEMORY_SIZE asize MEMORY_FILE
+    if MEMORY_SIZE > 100
+        log FILENAME 0 MEMORY_SIZE MEMORY_FILE
+    endif
+endif
+
+if OGGS_OFFSET != ""
+    goto OGGS_OFFSET
+    log MEMORY_FILE OGGS_OFFSET 0x1000000 # 16MB max size
+    string FILENAME p= "oggs_%08d.wem" 0
+    get MEMORY_SIZE asize MEMORY_FILE
+    if MEMORY_SIZE > 100
+        log FILENAME 0 MEMORY_SIZE MEMORY_FILE
+    endif
 endif
 
 # Look for HIRC chunk which may contain embedded files
@@ -125,91 +129,39 @@ if HIRC_OFFSET != ""
     goto HIRC_OFFSET
     get HIRC_ID long
     get HIRC_SIZE long
-    savepos HIRC_START
     
-    # Try to read number of items
-    get NUM_ITEMS long
-    
-    # Sanity check
-    if NUM_ITEMS > 0 && NUM_ITEMS < 100000
-        # Scan through HIRC items
-        set EXTRACTED 0
-        for i = 0 < NUM_ITEMS
-            get TYPE byte
-            get SIZE long
-            savepos ITEM_START
-            
-            # Look for sound objects
-            if TYPE <= 20 && SIZE > 16 && SIZE < 10000000
-                get ID long
-                
-                # Try to find embedded audio data
-                math DATA_POS = ITEM_START + SIZE - 16
-                if DATA_POS < HIRC_START + HIRC_SIZE
-                    goto DATA_POS
-                    getdstring MARKER 4
-                    if MARKER == "RIFF" || MARKER == "wem " || MARKER == "OggS"
-                        # Found embedded audio
-                        goto DATA_POS
-                        
-                        # Extract with a reasonable size
-                        math WEM_SIZE = SIZE - (DATA_POS - ITEM_START)
-                        
-                        log MEMORY_FILE DATA_POS WEM_SIZE
-                        string FILENAME p= "hirc_%08d.wem" ID
-                        get MEMORY_SIZE asize MEMORY_FILE
-                        log FILENAME 0 MEMORY_SIZE MEMORY_FILE
-                        math EXTRACTED + 1
-                    endif
-                endif
-            endif
-            
-            # Move to next item
-            goto ITEM_START
-            goto SIZE
-        next i
+    # If reasonable size, extract whole HIRC chunk
+    if HIRC_SIZE > 100 && HIRC_SIZE < 0x10000000
+        log MEMORY_FILE HIRC_OFFSET HIRC_SIZE
+        string FILENAME p= "hirc_full.wem"
+        get MEMORY_SIZE asize MEMORY_FILE
+        log FILENAME 0 MEMORY_SIZE MEMORY_FILE
     endif
 endif
 
-# Check for DATA chunks with embedded WEMs
+# Check for DATA chunk and extract whole chunk if found
 findloc DATA_START string "DATA" 0 ""
 if DATA_START != ""
     goto DATA_START
     get DATA_ID long
     get DATA_SIZE long
-    savepos DATA_POS
     
-    # Try to find embedded WEM files by scanning
-    set FOUND 0
-    for i = 0 < DATA_SIZE step 4
-        savepos CURRENT_POS
-        if CURRENT_POS >= DATA_POS + DATA_SIZE
-            break
-        endif
-        
-        getdstring MARKER 4
-        if MARKER == "RIFF" || MARKER == "wem " || MARKER == "OggS"
-            # Possible audio file
-            goto CURRENT_POS
-            
-            # Try to extract a reasonable chunk
-            math EXTRACT_SIZE = 2000000  # Use fixed size
-            if CURRENT_POS + EXTRACT_SIZE > DATA_POS + DATA_SIZE
-                math EXTRACT_SIZE = DATA_POS + DATA_SIZE - CURRENT_POS
-            endif
-            
-            log MEMORY_FILE CURRENT_POS EXTRACT_SIZE
-            string FILENAME p= "data_%08d.wem" FOUND
-            get MEMORY_SIZE asize MEMORY_FILE
-            log FILENAME 0 MEMORY_SIZE MEMORY_FILE
-            math FOUND + 1
-            
-            # Skip ahead to avoid duplicates
-            math CURRENT_POS + EXTRACT_SIZE
-            goto CURRENT_POS
-        endif
-    next i
+    # If DATA chunk has reasonable size, extract it
+    if DATA_SIZE > 100 && DATA_SIZE < 0x10000000
+        log MEMORY_FILE DATA_START DATA_SIZE
+        string FILENAME p= "data_full.wem"
+        get MEMORY_SIZE asize MEMORY_FILE
+        log FILENAME 0 MEMORY_SIZE MEMORY_FILE
+    endif
 endif
+
+# Last resort - extract the entire file
+goto 0
+get FILESIZE asize
+log MEMORY_FILE 0 FILESIZE
+string FILENAME p= "full_file.wem"
+get MEMORY_SIZE asize MEMORY_FILE
+log FILENAME 0 MEMORY_SIZE MEMORY_FILE
 """
 
 def create_wwise_bms_script(path):
@@ -248,309 +200,253 @@ def extract_wsb_direct(wsb_file, output_dir, wsb_prefix):
             data = f.read()
         
         extracted = 0
-        signatures_found = []
         
-        # 1. Scan for RIFF signatures (standard WEM/WAV files)
-        riff_positions = []
-        pos = 0
-        while True:
-            pos = data.find(b'RIFF', pos)
-            if pos == -1:
-                break
-            riff_positions.append(pos)
-            pos += 4
-        
-        for i, pos in enumerate(riff_positions):
-            try:
-                if pos + 8 >= len(data):
-                    continue
-                
-                size_bytes = data[pos+4:pos+8]
-                size = struct.unpack('<I', size_bytes)[0]
-                
-                # Reasonableness checks
-                if size < 8 or size > 50000000 or pos + size + 8 > len(data):
-                    # Try alternative size determination
-                    estimated_size = min(2000000, len(data) - pos)  # 2MB or remaining data
-                    
-                    # Check format type
-                    if pos + 12 < len(data):
-                        format_type = data[pos+8:pos+12]
-                        if format_type in (b'WAVE', b'XWMA', b'wem '):
-                            # Extract with estimated size
-                            wem_file = os.path.join(output_dir, f"{wsb_prefix}_riff_{i:08d}.wem")
-                            with open(wem_file, 'wb') as wf:
-                                wf.write(data[pos:pos+estimated_size])
-                            
-                            extracted += 1
-                            signatures_found.append("RIFF")
-                    continue
-                
-                # Standard extraction with proper size
-                wem_file = os.path.join(output_dir, f"{wsb_prefix}_riff_{i:08d}.wem")
-                with open(wem_file, 'wb') as wf:
-                    wf.write(data[pos:pos+size+8])
-                
-                extracted += 1
-                signatures_found.append("RIFF")
-            except Exception:
-                continue
-        
-        # 2. Scan for OggS signatures (Vorbis)
-        ogg_positions = []
-        pos = 0
-        while True:
-            pos = data.find(b'OggS', pos)
-            if pos == -1:
-                break
-            ogg_positions.append(pos)
-            pos += 4
-        
-        for i, pos in enumerate(ogg_positions):
-            try:
-                # Estimate size
-                next_ogg = data.find(b'OggS', pos + 4)
-                if next_ogg != -1 and next_ogg < pos + 10000000:
-                    extract_size = next_ogg - pos
-                else:
-                    extract_size = min(2000000, len(data) - pos)
-                
-                wem_file = os.path.join(output_dir, f"{wsb_prefix}_ogg_{i:08d}.wem")
-                with open(wem_file, 'wb') as wf:
-                    wf.write(data[pos:pos+extract_size])
-                
-                extracted += 1
-                signatures_found.append("OggS")
-            except Exception:
-                continue
-        
-        # 3. If nothing found, try raw extraction at fixed intervals
-        if extracted == 0:
-            file_size = len(data)
-            chunk_size = min(2000000, file_size // 10)
+        # 1. Extract whole file if RIFF header is at the beginning
+        if data[:4] == b'RIFF' or data[:4] == b'RIFX':
+            wem_file = os.path.join(output_dir, f"{wsb_prefix}_full.wem")
+            with open(wem_file, 'wb') as wf:
+                wf.write(data)
+            extracted += 1
+            return extracted, None
             
-            for i in range(0, 10):
-                start_pos = (file_size * i) // 10
-                end_pos = min(start_pos + chunk_size, file_size)
-                
-                if end_pos - start_pos < 1000:  # Skip tiny chunks
-                    continue
-                
-                wem_file = os.path.join(output_dir, f"{wsb_prefix}_chunk_{i:08d}.wem")
-                with open(wem_file, 'wb') as wf:
-                    wf.write(data[start_pos:end_pos])
-                
-                extracted += 1
-                signatures_found.append("CHUNK")
-        
-        if extracted == 0:
-            return 0, "No audio signatures found"
+        # 2. If no RIFF at start, scan for RIFF signatures
+        riff_pos = data.find(b'RIFF')
+        if riff_pos != -1:
+            wem_file = os.path.join(output_dir, f"{wsb_prefix}_riff.wem")
+            with open(wem_file, 'wb') as wf:
+                wf.write(data[riff_pos:])
+            extracted += 1
+            return extracted, None
+            
+        # 3. Try OggS
+        ogg_pos = data.find(b'OggS')
+        if ogg_pos != -1:
+            wem_file = os.path.join(output_dir, f"{wsb_prefix}_ogg.wem")
+            with open(wem_file, 'wb') as wf:
+                wf.write(data[ogg_pos:])
+            extracted += 1
+            return extracted, None
+            
+        # 4. Last resort - extract the entire file
+        wem_file = os.path.join(output_dir, f"{wsb_prefix}_full.wem")
+        with open(wem_file, 'wb') as wf:
+            wf.write(data)
+        extracted += 1
         
         return extracted, None
     except Exception as e:
         return 0, f"Direct extraction failed: {str(e)}"
 
-def extract_raw_audio(wsb_file, output_dir, wsb_prefix):
+def convert_wem_to_wav(wem_file, vgmstream_path, keep_wem):
     """
-    Extract audio by looking for raw audio data patterns without relying on headers.
+    Convert a WEM file to WAV format and optionally delete the WEM file.
     
     Args:
-        wsb_file: Path to the WSB file to extract
-        output_dir: Directory where extracted files will be saved
-        wsb_prefix: Prefix to add to extracted filenames
+        wem_file: Path object for the WEM file
+        vgmstream_path: Path to vgmstream executable
+        keep_wem: Whether to keep WEM file after conversion
         
     Returns:
-        Tuple of (number of successfully extracted files, error message if any)
+        Tuple of (success, wav_file_path or None, error)
     """
     try:
-        with open(wsb_file, 'rb') as f:
-            data = f.read()
-            
-        file_size = len(data)
-        if file_size < 1024:
-            return 0, "File too small for raw extraction"
-            
-        extracted = 0
+        # Check file size - if too small, it's likely not a valid audio file
+        file_size = wem_file.stat().st_size
+        if file_size < 5000:  # Less than 5KB is suspicious
+            logger.warning(f"File {wem_file.name} is very small ({file_size} bytes), may not be a valid audio file")
+            # We'll try to convert anyway, but with a note
         
-        # Divide file into chunks and analyze each for audio-like characteristics
-        chunk_size = 512 * 1024  # 512KB chunks
-        num_chunks = file_size // chunk_size + (1 if file_size % chunk_size else 0)
+        wav_file = wem_file.with_suffix('.wav')
         
-        for i in range(num_chunks):
-            start_pos = i * chunk_size
-            end_pos = min(start_pos + chunk_size, file_size)
-            
-            # Skip chunks that are too small
-            if end_pos - start_pos < 10240:  # At least 10KB
-                continue
-                
-            chunk = data[start_pos:end_pos]
-            
-            # Calculate some simple statistics to identify audio-like data
-            entropy = 0
-            byte_counts = {}
-            for b in chunk:
-                byte_counts[b] = byte_counts.get(b, 0) + 1
-            
-            for count in byte_counts.values():
-                probability = count / len(chunk)
-                try:
-                    entropy -= probability * (math.log(probability) / math.log(2))
-                except:
-                    continue
-            
-            # Audio typically has moderately high entropy
-            if 4.5 <= entropy <= 7.0 and len(byte_counts) >= 40:
-                output_file = os.path.join(output_dir, f"{wsb_prefix}_raw_{i}.wem")
-                with open(output_file, 'wb') as out_f:
-                    out_f.write(chunk)
-                    
-                extracted += 1
+        # Run vgmstream to convert WEM to WAV with verbose output
+        cmd = [vgmstream_path, "-o", str(wav_file), str(wem_file), "-v"]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=False)
         
-        # Last resort - extract the entire file
-        if extracted == 0:
-            output_file = os.path.join(output_dir, f"{wsb_prefix}_full.wem")
-            with open(output_file, 'wb') as out_f:
-                out_f.write(data)
-                
-            extracted += 1
+        stdout = result.stdout.decode('utf-8', errors='replace')
+        stderr = result.stderr.decode('utf-8', errors='replace')
         
-        if extracted == 0:
-            return 0, "No audio patterns identified"
+        # Log the output regardless of success for debugging
+        if stdout:
+            logger.debug(f"vgmstream stdout for {wem_file.name}: {stdout}")
+        if stderr:
+            logger.debug(f"vgmstream stderr for {wem_file.name}: {stderr}")
+        
+        if result.returncode != 0 or not wav_file.exists() or wav_file.stat().st_size < 100:
+            # If conversion failed, we'll keep the WEM file for inspection
+            return False, None, f"vgmstream conversion failed: {stderr or 'Unknown error'}"
+        
+        # Delete the WEM file if requested and conversion succeeded
+        if not keep_wem:
+            try:
+                wem_file.unlink()
+            except Exception as e:
+                logger.warning(f"Failed to delete WEM file {wem_file}: {str(e)}")
             
-        return extracted, None
-        
+        return True, wav_file, None
     except Exception as e:
-        return 0, f"Raw extraction failed: {str(e)}"
+        return False, None, f"Conversion error: {str(e)}"
 
 def extract_wsb_worker(args):
     """
     Worker function for parallel extraction of WSB files.
     
     Args:
-        args: Tuple containing (wsb_file, output_dir, quickbms_path, bms_script_path, prefix, force_raw)
+        args: Tuple containing (wsb_file, output_dir, quickbms_path, bms_script_path, vgmstream_path, keep_wem, prefix, force_raw)
         
     Returns:
-        Tuple containing (filename, success_count, error_message)
+        Tuple containing (filename, success_count, conversion_failures, error_message)
     """
-    if len(args) == 6:
-        wsb_file, output_dir, quickbms_path, bms_script_path, prefix, force_raw = args
-    else:
-        wsb_file, output_dir, quickbms_path, bms_script_path, prefix = args
-        force_raw = False
+    wsb_file, output_dir, quickbms_path, bms_script_path, vgmstream_path, keep_wem, prefix, force_raw = args
     
     try:
         # Create a temporary directory for extraction
         with tempfile.TemporaryDirectory() as temp_dir:
+            temp_dir_path = Path(temp_dir)
+            
             # Generate a unique identifier for this extraction
             wsb_name = Path(wsb_file).stem
             file_prefix = f"{prefix}_{wsb_name}_" if prefix else f"{wsb_name}_"
             
-            # If force_raw is True, skip QuickBMS and go straight to raw extraction
+            extracted_files = 0
+            converted_wavs = 0
+            conversion_failures = 0
+            conversion_errors = []
+            
+            # Method 1: Try QuickBMS extraction if not forcing raw mode
             if not force_raw:
-                # First try QuickBMS
                 try:
-                    result = subprocess.run(
+                    proc = subprocess.run(
                         [quickbms_path, "-o", bms_script_path, wsb_file, temp_dir],
                         stdout=subprocess.PIPE, 
                         stderr=subprocess.PIPE,
-                        text=False  # Use binary mode to avoid encoding issues
+                        timeout=60  # Add timeout to prevent hanging
                     )
                     
+                    # Log QuickBMS output for debugging
+                    stdout = proc.stdout.decode('utf-8', errors='replace')
+                    stderr = proc.stderr.decode('utf-8', errors='replace')
+                    if stderr:
+                        logger.debug(f"QuickBMS stderr for {wsb_file.name}: {stderr}")
+                    
                     # Check for extracted files
-                    wem_files = list(Path(temp_dir).glob("*.wem"))
+                    wem_files = list(temp_dir_path.glob("*.wem"))
+                    extracted_files = len(wem_files)
                     
-                    if wem_files:
-                        # Move the files to the output directory
-                        file_count = 0
+                    # If we successfully extracted files with QuickBMS
+                    if extracted_files > 0:
+                        # Process each extracted WEM file
                         for wem_file in wem_files:
-                            output_file = Path(output_dir) / f"{file_prefix}{wem_file.name}"
-                            shutil.move(str(wem_file), str(output_file))
-                            file_count += 1
+                            # Log file size for debugging
+                            file_size = wem_file.stat().st_size
+                            logger.debug(f"Extracted {wem_file.name}: {file_size} bytes")
+                            
+                            # First convert to WAV if we have vgmstream
+                            if vgmstream_path:
+                                success, wav_file, error = convert_wem_to_wav(wem_file, vgmstream_path, keep_wem)
+                                
+                                if success:
+                                    # Move the WAV file to output directory
+                                    output_wav = Path(output_dir) / f"{file_prefix}{wav_file.name}"
+                                    shutil.copy2(wav_file, output_wav)
+                                    converted_wavs += 1
+                                else:
+                                    # If conversion failed, record the error and move the WEM
+                                    conversion_failures += 1
+                                    conversion_errors.append(f"{wem_file.name}: {error}")
+                                    logger.warning(f"Failed to convert {wem_file.name}: {error}")
+                                    output_wem = Path(output_dir) / f"{file_prefix}{wem_file.name}"
+                                    shutil.copy2(wem_file, output_wem)
+                                continue
+                            
+                            # If no vgmstream, just move the WEM
+                            output_wem = Path(output_dir) / f"{file_prefix}{wem_file.name}"
+                            shutil.copy2(wem_file, output_wem)
                         
-                        return wsb_file.name, file_count, None
+                        # Return results including conversion failures
+                        return wsb_file.name, converted_wavs + (extracted_files - converted_wavs), conversion_failures, None
                 except Exception as e:
-                    # Continue to next method if QuickBMS fails
-                    pass
-                
-                # Next try direct extraction
-                try:
-                    extracted_count, direct_error = extract_wsb_direct(wsb_file, temp_dir, file_prefix)
-                    
-                    if extracted_count > 0:
-                        # Move the extracted files to the output directory
-                        wem_files = list(Path(temp_dir).glob("*.wem"))
-                        for wem_file in wem_files:
-                            output_file = Path(output_dir) / f"{file_prefix}{wem_file.name}"
-                            shutil.move(str(wem_file), str(output_file))
-                        
-                        return wsb_file.name, extracted_count, None
-                except Exception as e:
-                    # Continue to next method if direct extraction fails
+                    logger.warning(f"QuickBMS extraction failed for {wsb_file.name}: {str(e)}")
+                    # If QuickBMS fails, continue to next method
                     pass
             
-            # Finally try raw audio extraction
+            # Method 2: Try direct extraction
             try:
-                extracted_count, raw_error = extract_raw_audio(wsb_file, temp_dir, file_prefix)
+                count, error = extract_wsb_direct(wsb_file, temp_dir, file_prefix)
                 
-                if extracted_count > 0:
-                    # Move the extracted files to the output directory
-                    wem_files = list(Path(temp_dir).glob("*.wem"))
+                if count > 0:
+                    # Direct extraction succeeded, process the files
+                    wem_files = list(temp_dir_path.glob("*.wem"))
+                    
                     for wem_file in wem_files:
-                        output_file = Path(output_dir) / f"{file_prefix}{wem_file.name}"
-                        shutil.move(str(wem_file), str(output_file))
+                        # Log file size for debugging
+                        file_size = wem_file.stat().st_size
+                        logger.debug(f"Direct extracted {wem_file.name}: {file_size} bytes")
+                        
+                        # Convert to WAV if we have vgmstream
+                        if vgmstream_path:
+                            success, wav_file, error = convert_wem_to_wav(wem_file, vgmstream_path, keep_wem)
+                            
+                            if success:
+                                # Move the WAV file to output directory
+                                output_wav = Path(output_dir) / f"{file_prefix}{wav_file.name}"
+                                shutil.copy2(wav_file, output_wav)
+                                converted_wavs += 1
+                            else:
+                                # If conversion failed, record the error and move the WEM
+                                conversion_failures += 1
+                                conversion_errors.append(f"{wem_file.name}: {error}")
+                                logger.warning(f"Failed to convert {wem_file.name}: {error}")
+                                output_wem = Path(output_dir) / f"{file_prefix}{wem_file.name}"
+                                shutil.copy2(wem_file, output_wem)
+                            continue
+                        
+                        # If no vgmstream, just move the WEM
+                        output_wem = Path(output_dir) / f"{file_prefix}{wem_file.name}"
+                        shutil.copy2(wem_file, output_wem)
                     
-                    return wsb_file.name, extracted_count, None
-                else:
-                    if raw_error:
-                        return wsb_file.name, 0, raw_error
+                    # Return results including conversion failures
+                    return wsb_file.name, converted_wavs + (count - converted_wavs), conversion_failures, None
             except Exception as e:
-                return wsb_file.name, 0, f"All extraction methods failed: {str(e)}"
+                logger.warning(f"Direct extraction failed for {wsb_file.name}: {str(e)}")
+                # Continue to final attempt if direct extraction fails
+                pass
             
-            # If we get here, all methods failed
-            return wsb_file.name, 0, "All extraction methods failed"
-    except Exception as e:
-        return wsb_file.name, 0, f"Extraction process failed: {str(e)}"
-
-def convert_wem_to_wav_worker(args):
-    """
-    Worker function for parallel conversion of WEM files to WAV format.
-    
-    Args:
-        args: Tuple containing (wem_file, vgmstream_cmd, keep_wem)
-        
-    Returns:
-        Tuple containing (filename, success, error_message)
-    """
-    wem_file, vgmstream_cmd, keep_wem = args
-    
-    try:
-        output_file = wem_file.with_suffix(".wav")
-        
-        # Convert WEM to WAV using vgmstream
-        result = subprocess.run(
-            [vgmstream_cmd, "-o", str(output_file), str(wem_file)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=False  # Use binary mode to avoid encoding issues
-        )
-        
-        # Safely decode stderr with error handling
-        stderr_text = result.stderr.decode('utf-8', errors='replace') if result.stderr else ""
-        
-        if result.returncode != 0:
-            return wem_file.name, False, f"vgmstream error: {stderr_text}"
-        
-        # Delete WEM file if conversion was successful and not keeping WEMs
-        if output_file.exists() and not keep_wem:
+            # Method 3: Last resort - extract whole file
             try:
-                wem_file.unlink()
-            except Exception:
-                pass  # Ignore errors when deleting WEM files
-            
-        return wem_file.name, True, None
+                output_wem = temp_dir_path / f"{file_prefix}full_file.wem"
+                shutil.copy2(wsb_file, output_wem)
+                
+                # Log file size for debugging
+                file_size = output_wem.stat().st_size
+                logger.debug(f"Full file extraction {output_wem.name}: {file_size} bytes")
+                
+                # Try to convert this whole-file WEM
+                if vgmstream_path:
+                    success, wav_file, error = convert_wem_to_wav(output_wem, vgmstream_path, keep_wem)
+                    
+                    if success:
+                        # Move the WAV file to output directory
+                        output_wav = Path(output_dir) / f"{file_prefix}{wav_file.name}"
+                        shutil.copy2(wav_file, output_wav)
+                        return wsb_file.name, 1, 0, None
+                    else:
+                        # If conversion failed, log and move the WEM
+                        conversion_failures += 1
+                        conversion_errors.append(f"{output_wem.name}: {error}")
+                        logger.warning(f"Failed to convert {output_wem.name}: {error}")
+                
+                # If conversion failed or no vgmstream, move the WEM
+                final_output = Path(output_dir) / f"{file_prefix}{output_wem.name}"
+                shutil.copy2(output_wem, final_output)
+                return wsb_file.name, 1, conversion_failures, None
+            except Exception as e:
+                error_msg = f"All extraction methods failed: {str(e)}"
+                logger.error(error_msg)
+                return wsb_file.name, 0, 0, error_msg
     except Exception as e:
-        return wem_file.name, False, f"Conversion failed: {str(e)}"
+        error_msg = f"Extraction process error: {str(e)}"
+        logger.error(error_msg)
+        return wsb_file.name, 0, 0, error_msg
 
 def main():
     """
@@ -566,8 +462,15 @@ def main():
     parser.add_argument("--workers", "-w", type=int, default=0, help="Number of worker processes (default: number of CPU cores)")
     parser.add_argument("--raw", "-r", action="store_true", help="Force raw audio extraction mode")
     parser.add_argument("--error-log", "-e", default="errors.log", help="Path to error log file (default: 'errors.log')")
+    parser.add_argument("--verbose", "-d", action="store_true", help="Enable verbose debug logging")
+    parser.add_argument("--try-ffmpeg", "-f", action="store_true", help="Try using FFmpeg if vgmstream fails")
     
     args = parser.parse_args()
+    
+    # Setup logging based on verbosity
+    if args.verbose:
+        logger.setLevel(logging.DEBUG)
+        print("Debug logging enabled")
     
     # Set up error logging to file
     error_handler = logging.FileHandler(args.error_log, mode='w')
@@ -578,7 +481,6 @@ def main():
     
     input_path = Path(args.input)
     output_path = Path(args.output)
-    quickbms_path = args.quickbms
     
     # Determine optimal number of worker processes
     num_workers = args.workers if args.workers > 0 else max(1, multiprocessing.cpu_count() - 1)
@@ -590,6 +492,15 @@ def main():
     
     # Ensure output directory exists
     output_path.mkdir(parents=True, exist_ok=True)
+    
+    # Check if vgmstream is available
+    vgmstream_path = None
+    try:
+        subprocess.run([args.vgmstream, "--help"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        vgmstream_path = args.vgmstream
+        print(f"vgmstream-cli found at {vgmstream_path}")
+    except:
+        print("vgmstream-cli not found. WEM files will not be converted to WAV.")
     
     # Begin extraction process
     print(f"Starting extraction process with {num_workers} workers")
@@ -605,111 +516,67 @@ def main():
             logger.error(f"No WSB files found in {input_path}")
             sys.exit(1)
         
-        print(f"Found {len(wsb_files)} WSB files")
+        print(f"Found {len(wsb_files)} WSB files to process")
         
         # Prepare tasks for parallel extraction
         extract_tasks = [
-            (wsb_file, output_path, quickbms_path, bms_script_path, args.prefix, args.raw)
+            (wsb_file, output_path, args.quickbms, bms_script_path, vgmstream_path, 
+             args.keep_wem, args.prefix, args.raw)
             for wsb_file in wsb_files
         ]
         
         # Execute extraction tasks in parallel with progress bar
-        extract_success = 0
-        extract_fail = 0
-        extract_errors = {}
-        extracted_file_count = 0
+        success_count = 0
+        fail_count = 0
+        total_files_processed = 0
+        total_conversion_failures = 0
+        file_errors = {}
         
-        print("Extracting audio from WSB files...")
+        print("Extracting audio and converting to WAV...")
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
             futures = [executor.submit(extract_wsb_worker, task) for task in extract_tasks]
             
             for future in tqdm(as_completed(futures), total=len(futures), 
-                               desc="WSB Extraction", unit="file"):
+                               desc="Processing", unit="file"):
                 try:
-                    filename, count, error = future.result()
+                    filename, count, conv_failures, error = future.result()
                     if error:
-                        extract_fail += 1
-                        extract_errors[filename] = error
-                        error_logger.error(f"Extraction error for {filename}: {error}")
+                        fail_count += 1
+                        file_errors[filename] = error
+                        error_logger.error(f"Error processing {filename}: {error}")
                     else:
-                        extract_success += 1
-                        extracted_file_count += count
+                        success_count += 1
+                        total_files_processed += count
+                        total_conversion_failures += conv_failures
                 except Exception as e:
-                    extract_fail += 1
-                    extract_errors[f"unknown_{extract_fail}"] = str(e)
-                    error_logger.error(f"Unexpected error during extraction: {str(e)}")
-        
-        # Output extraction statistics
-        print(f"\nExtraction completed: {extract_success} successful, {extract_fail} failed")
-        print(f"Extracted {extracted_file_count} audio files")
-        
-        if extract_fail > 0:
-            print(f"Error details saved to {args.error_log}")
-        
-        # Check if vgmstream is available for WEM to WAV conversion
-        have_vgmstream = False
-        try:
-            vgmstream_check = subprocess.run(
-                [args.vgmstream, "--help"], 
-                stdout=subprocess.PIPE, 
-                stderr=subprocess.PIPE,
-                text=False  # Use binary mode to avoid encoding issues
-            )
-            have_vgmstream = vgmstream_check.returncode == 0
-        except:
-            print("vgmstream-cli not found. WEM files will not be converted to WAV.")
-        
-        # Convert WEM files to WAV format if vgmstream is available
-        if have_vgmstream and extracted_file_count > 0:
-            wem_files = list(output_path.glob("*.wem"))
-            
-            if wem_files:
-                print(f"\nFound {len(wem_files)} WEM files to convert to WAV")
-                
-                # Prepare tasks for parallel conversion
-                convert_tasks = [
-                    (wem_file, args.vgmstream, args.keep_wem)
-                    for wem_file in wem_files
-                ]
-                
-                # Execute conversion tasks in parallel with progress bar
-                convert_success = 0
-                convert_fail = 0
-                convert_errors = {}
-                
-                print("Converting WEM files to WAV...")
-                with ProcessPoolExecutor(max_workers=num_workers) as executor:
-                    futures = [executor.submit(convert_wem_to_wav_worker, task) for task in convert_tasks]
-                    
-                    for future in tqdm(as_completed(futures), total=len(futures), 
-                                    desc="WEM to WAV", unit="file"):
-                        try:
-                            filename, success, error = future.result()
-                            if not success:
-                                convert_fail += 1
-                                convert_errors[filename] = error
-                                error_logger.error(f"Conversion error for {filename}: {error}")
-                            else:
-                                convert_success += 1
-                        except Exception as e:
-                            convert_fail += 1
-                            convert_errors[f"unknown_{convert_fail}"] = str(e)
-                            error_logger.error(f"Unexpected error during conversion: {str(e)}")
-                
-                # Output conversion statistics
-                print(f"\nConversion completed: {convert_success} successful, {convert_fail} failed")
-                
-                if convert_fail > 0:
-                    print(f"Error details saved to {args.error_log}")
+                    fail_count += 1
+                    file_errors[f"unknown_{fail_count}"] = str(e)
+                    error_logger.error(f"Exception during processing: {str(e)}")
+    
+    # Count WEM files in output directory - these are likely conversion failures
+    wem_files_count = len(list(output_path.glob("*.wem")))
+    wav_files_count = len(list(output_path.glob("*.wav")))
     
     # Final summary
     print("\n--- Processing Summary ---")
     print(f"WSB files processed: {len(wsb_files)}")
-    print(f"Extraction: {extract_success} successful, {extract_fail} failed")
-    print(f"Audio files extracted: {extracted_file_count}")
+    print(f"Files successfully processed: {success_count}")
+    print(f"Files failed to process: {fail_count}")
+    print(f"Total audio files extracted: {total_files_processed}")
     
-    if have_vgmstream and 'convert_success' in locals():
-        print(f"Conversion: {convert_success} successful, {convert_fail} failed")
+    if total_conversion_failures > 0:
+        print(f"Failed conversions: {total_conversion_failures} WEM files could not be converted to WAV")
+        
+    print(f"Output directory contains: {wav_files_count} WAV files, {wem_files_count} WEM files")
+    
+    if wem_files_count > 0:
+        print("\nNote about WEM files:")
+        print("- Small WEM files (< 5KB) are likely metadata-only or invalid")
+        print("- Try opening these files in a hex editor to inspect their content")
+        print("- If you need to convert these files, you might try ReWwise or other specialized tools")
+    
+    if fail_count > 0 or total_conversion_failures > 0:
+        print(f"\nError details saved to {args.error_log}")
     
     print(f"\nOutput saved to: {output_path}")
 
